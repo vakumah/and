@@ -462,11 +462,10 @@ export class UIManager {
       }
     }, 1000);
   }
-}
-
 
   setupGlobalEventListeners() {
     window.addEventListener('toast', (e) => {
       this.showToast(e.detail.message, e.detail.type);
     });
   }
+}
