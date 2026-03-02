@@ -1,5 +1,4 @@
-import adb from 'adbkit';
-import { exec } from 'child_process';
+import { exec, spawn } from 'child_process';
 import { promisify } from 'util';
 
 const execAsync = promisify(exec);
@@ -7,19 +6,19 @@ const execAsync = promisify(exec);
 export class ADBService {
   constructor(deviceId) {
     this.deviceId = deviceId;
-    this.client = adb.createClient();
   }
 
   async getDevice() {
     try {
-      const devices = await this.client.listDevices();
-      const device = devices.find(d => d.id === this.deviceId);
+      const { stdout } = await execAsync('adb devices');
+      const lines = stdout.split('\n');
+      const deviceLine = lines.find(line => line.includes(this.deviceId));
       
-      if (!device) {
+      if (!deviceLine || !deviceLine.includes('device')) {
         throw new Error(`Device ${this.deviceId} not found`);
       }
       
-      return device;
+      return { id: this.deviceId };
     } catch (error) {
       console.error('Error getting device:', error);
       throw error;
@@ -66,21 +65,12 @@ export class ADBService {
 
   async shell(command) {
     try {
-      const output = await this.client.shell(this.deviceId, command);
-      return await this.readAll(output);
+      const { stdout } = await execAsync(`adb -s ${this.deviceId} shell "${command}"`);
+      return stdout;
     } catch (error) {
       console.error('Shell command error:', error);
       throw error;
     }
-  }
-
-  async readAll(stream) {
-    return new Promise((resolve, reject) => {
-      const chunks = [];
-      stream.on('data', chunk => chunks.push(chunk));
-      stream.on('end', () => resolve(Buffer.concat(chunks).toString('utf8')));
-      stream.on('error', reject);
-    });
   }
 
   async getProperty(prop) {
@@ -176,14 +166,16 @@ export class ADBService {
 
   async screenshot() {
     try {
-      const stream = await this.client.screencap(this.deviceId);
-      const chunks = [];
+      const tempFile = `/sdcard/screenshot_${Date.now()}.png`;
+      await this.shell(`screencap -p ${tempFile}`);
       
-      return new Promise((resolve, reject) => {
-        stream.on('data', chunk => chunks.push(chunk));
-        stream.on('end', () => resolve(Buffer.concat(chunks)));
-        stream.on('error', reject);
+      const { stdout } = await execAsync(`adb -s ${this.deviceId} exec-out cat ${tempFile}`, {
+        encoding: 'buffer',
+        maxBuffer: 10 * 1024 * 1024
       });
+      
+      await this.shell(`rm ${tempFile}`);
+      return stdout;
     } catch (error) {
       console.error('Screenshot error:', error);
       throw error;
@@ -259,7 +251,7 @@ export class ADBService {
 
   async installApk(apkPath) {
     try {
-      await this.client.install(this.deviceId, apkPath);
+      await execAsync(`adb -s ${this.deviceId} install -r "${apkPath}"`);
     } catch (error) {
       console.error('APK installation error:', error);
       throw error;
@@ -303,14 +295,11 @@ export class ADBService {
 
   async pullFile(remotePath) {
     try {
-      const transfer = await this.client.pull(this.deviceId, remotePath);
-      const chunks = [];
-      
-      return new Promise((resolve, reject) => {
-        transfer.on('data', chunk => chunks.push(chunk));
-        transfer.on('end', () => resolve(Buffer.concat(chunks)));
-        transfer.on('error', reject);
+      const { stdout } = await execAsync(`adb -s ${this.deviceId} exec-out cat "${remotePath}"`, {
+        encoding: 'buffer',
+        maxBuffer: 50 * 1024 * 1024
       });
+      return stdout;
     } catch (error) {
       console.error('Error pulling file:', error);
       throw error;
@@ -319,7 +308,7 @@ export class ADBService {
 
   async pushFile(localPath, remotePath) {
     try {
-      await this.client.push(this.deviceId, localPath, remotePath);
+      await execAsync(`adb -s ${this.deviceId} push "${localPath}" "${remotePath}"`);
     } catch (error) {
       console.error('Error pushing file:', error);
       throw error;
