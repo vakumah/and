@@ -1,178 +1,163 @@
-name: Android ARM64 Testing
+name: Cuttlefish Development Environment
 
 on:
   workflow_dispatch:
     inputs:
-      duration:
-        description: 'Duration in minutes (max 360)'
+      keep_alive_minutes:
+        description: 'Keep environment alive (minutes)'
         required: false
         default: '60'
 
 jobs:
-  android-arm64:
+  cuttlefish-setup:
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 360
     
     steps:
-      - name: Checkout code
+      - name: Checkout repository
         uses: actions/checkout@v4
-      
-      - name: Free up disk space
+
+      - name: Check KVM availability
         run: |
-          sudo rm -rf /usr/share/dotnet
-          sudo rm -rf /opt/ghc
-          sudo rm -rf /usr/local/share/boost
-          df -h
-      
+          echo "Checking KVM support..."
+          if [ -e /dev/kvm ]; then
+            echo "✓ /dev/kvm exists"
+            ls -la /dev/kvm
+          else
+            echo "✗ /dev/kvm not found"
+          fi
+          
+          echo "Checking CPU virtualization support..."
+          if grep -q -E 'vmx|svm' /proc/cpuinfo; then
+            echo "✓ CPU supports virtualization"
+          else
+            echo "✗ CPU does not support virtualization"
+          fi
+
+      - name: Enable KVM group perms
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+          sudo chmod 666 /dev/kvm || true
+          ls -la /dev/kvm || echo "KVM device not available"
+
       - name: Install dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y adb ffmpeg
-      
-      - name: Install linux-modules-extra for binder
+          sudo apt-get install -y \
+            qemu-kvm \
+            libvirt-daemon-system \
+            libvirt-clients \
+            bridge-utils \
+            cpu-checker \
+            wget \
+            unzip \
+            git
+
+      - name: Verify KVM
         run: |
-          sudo apt-get install -y linux-modules-extra-$(uname -r)
-      
-      - name: Load binder module
+          kvm-ok || echo "KVM check failed, continuing anyway..."
+          groups
+          id
+
+      - name: Download Cuttlefish
         run: |
-          sudo modprobe binder_linux devices="binder,hwbinder,vndbinder"
-          lsmod | grep binder
-      
-      - name: Mount binderfs
-        run: |
-          sudo mkdir -p /dev/binderfs
-          sudo mount -t binder binder /dev/binderfs
-          ls -la /dev/binderfs/
-      
-      - name: Pull Redroid ARM64 image
-        run: |
-          docker pull redroid/redroid:12.0.0-latest
-      
-      - name: Start Redroid ARM64 container
-        run: |
-          docker run -itd \
-            --rm \
-            --privileged \
-            --name redroid-arm64 \
-            -v ~/redroid-data:/data \
-            -v /dev/binderfs:/dev/binderfs \
-            -p 5555:5555 \
-            redroid/redroid:12.0.0-latest
-      
-      - name: Wait for Android boot
-        run: |
-          echo "Waiting for Android to boot..."
-          sleep 40
-      
-      - name: Connect ADB
-        run: |
-          adb kill-server || true
-          adb start-server
-          sleep 2
-          adb connect localhost:5555
+          echo "Downloading Cuttlefish host package..."
+          wget https://ci.android.com/builds/latest/branches/aosp-main/targets/aosp_cf_arm64_phone-trunk_staging-userdebug/view/cvd-host_package.tar.gz
           
-          # Wait for device online
-          for i in {1..30}; do
-            STATUS=$(adb devices | grep "localhost:5555" | awk '{print $2}')
-            if [ "$STATUS" = "device" ]; then
-              echo "✅ Device online!"
-              break
-            fi
-            echo "Waiting for device... ($i/30)"
-            sleep 3
-          done
-      
-      - name: Verify Android ARM64
+          echo "Extracting Cuttlefish..."
+          mkdir -p cuttlefish
+          tar xzf cvd-host_package.tar.gz -C cuttlefish
+          
+          echo "Cuttlefish extracted to: $(pwd)/cuttlefish"
+          ls -la cuttlefish/
+
+      - name: Download Android image
         run: |
-          adb devices
-          echo "Android Version:"
-          adb -s localhost:5555 shell getprop ro.build.version.release
-          echo "Model:"
-          adb -s localhost:5555 shell getprop ro.product.model
-          echo "CPU ABI:"
-          adb -s localhost:5555 shell getprop ro.product.cpu.abi
-          echo "CPU ABI List:"
-          adb -s localhost:5555 shell getprop ro.product.cpu.abilist
-          echo "Architecture:"
-          adb -s localhost:5555 shell uname -m
-      
-      - name: Setup Android Web Controller
-        run: |
-          # Install dependencies
-          npm install
+          echo "Downloading Android system image..."
+          cd cuttlefish
+          wget https://ci.android.com/builds/latest/branches/aosp-main/targets/aosp_cf_arm64_phone-trunk_staging-userdebug/view/cvd-host_package.tar.gz -O image.zip || \
+          echo "Using alternative image source..."
           
-          # Build production bundle
-          npm run build
-          
-          # Start web controller server in background
-          nohup npm start > controller.log 2>&1 &
-          sleep 15
-          
-          echo "Android Web Controller started on port 8080"
-      
       - name: Setup Cloudflare Tunnel
+        env:
+          CLOUDFLARE_TUNNEL_TOKEN: ${{ secrets.CLOUDFLARE_TUNNEL_TOKEN }}
         run: |
-          # Download cloudflared ARM64
-          wget -q https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-arm64.deb
-          sudo dpkg -i cloudflared-linux-arm64.deb
+          if [ -z "$CLOUDFLARE_TUNNEL_TOKEN" ]; then
+            echo "⚠️  CLOUDFLARE_TUNNEL_TOKEN not set in secrets"
+            echo "Skipping Cloudflare Tunnel setup"
+            echo "To enable: Add CLOUDFLARE_TUNNEL_TOKEN to repository secrets"
+            exit 0
+          fi
           
-          # Start tunnel to web controller
-          nohup cloudflared tunnel --url http://localhost:8080 > tunnel.log 2>&1 &
-          sleep 15
+          echo "Installing cloudflared..."
+          wget -q https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-arm64
+          sudo mv cloudflared-linux-arm64 /usr/local/bin/cloudflared
+          sudo chmod +x /usr/local/bin/cloudflared
           
-          # Get URL from log
-          echo "=== Cloudflare Tunnel URL ==="
-          grep -o 'https://[a-z0-9-]*\.trycloudflare\.com' tunnel.log | head -1 | tee tunnel-url.txt
-          echo "============================"
-      
-      - name: Display access info
+          echo "Starting Cloudflare Tunnel..."
+          cloudflared tunnel --no-autoupdate run --token $CLOUDFLARE_TUNNEL_TOKEN &
+          
+          sleep 5
+          echo "✓ Cloudflare Tunnel started"
+
+      - name: Start Cuttlefish
         run: |
-          echo ""
-          echo "🎮 ===== ANDROID ARM64 READY ====="
-          echo ""
-          echo "📱 Android Version: $(adb -s localhost:5555 shell getprop ro.build.version.release)"
-          echo "🏗️  Architecture: $(adb -s localhost:5555 shell getprop ro.product.cpu.abi)"
-          echo "🔗 Web Access URL:"
-          cat tunnel-url.txt || echo "Check tunnel.log for URL"
-          echo ""
-          echo "⏱️  Session will run for ${{ github.event.inputs.duration }} minutes"
-          echo ""
-          echo "📋 ADB Commands you can use:"
-          echo "   adb -s localhost:5555 shell"
-          echo "   adb -s localhost:5555 install app.apk"
-          echo ""
-      
-      - name: Keep session alive
-        run: |
-          DURATION=${{ github.event.inputs.duration }}
-          echo "Keeping session alive for ${DURATION} minutes..."
+          cd cuttlefish
+          export PATH=$PATH:$(pwd)/bin
+          export HOME=$(pwd)
           
-          # Show tunnel URL every 5 minutes
-          for i in $(seq 1 $((DURATION / 5))); do
-            echo ""
-            echo "=== Session active - Minute $((i * 5))/${DURATION} ==="
-            echo "Tunnel URL:"
-            cat tunnel-url.txt 2>/dev/null || grep -o 'https://[a-z0-9-]*\.trycloudflare\.com' tunnel.log | head -1
-            echo ""
-            
-            # Show device status
-            adb devices | grep localhost:5555 || echo "Device offline, reconnecting..."
-            
-            sleep 300
+          echo "Launching Cuttlefish..."
+          ./bin/launch_cvd --daemon || echo "Launch failed, check logs"
+          
+          sleep 10
+          
+          echo "Checking Cuttlefish status..."
+          ./bin/cvd_status || echo "Status check failed"
+
+      - name: Display connection info
+        run: |
+          echo "================================"
+          echo "Cuttlefish Development Environment"
+          echo "================================"
+          echo ""
+          echo "ADB Connection:"
+          echo "  adb connect localhost:6520"
+          echo ""
+          echo "WebRTC Interface:"
+          echo "  https://localhost:8443"
+          echo ""
+          if [ ! -z "${{ secrets.CLOUDFLARE_TUNNEL_TOKEN }}" ]; then
+            echo "Cloudflare Tunnel: Active"
+            echo "Access via your configured tunnel domain"
+          else
+            echo "Cloudflare Tunnel: Not configured"
+          fi
+          echo ""
+          echo "Environment will stay alive for ${{ github.event.inputs.keep_alive_minutes }} minutes"
+          echo "================================"
+
+      - name: Keep alive
+        run: |
+          echo "Keeping environment alive..."
+          MINUTES=${{ github.event.inputs.keep_alive_minutes }}
+          SECONDS=$((MINUTES * 60))
+          
+          echo "Will run for $MINUTES minutes ($SECONDS seconds)"
+          
+          for i in $(seq 1 $MINUTES); do
+            echo "[$i/$MINUTES] Environment active... ($(date))"
+            sleep 60
           done
-      
-      - name: Upload logs on failure
-        if: failure()
-        uses: actions/upload-artifact@v4
-        with:
-          name: redroid-arm64-logs
-          path: |
-            tunnel.log
-            controller.log
-      
+          
+          echo "Time limit reached, shutting down..."
+
       - name: Cleanup
         if: always()
         run: |
-          docker stop redroid-arm64 || true
-          pkill cloudflared || true
-          pkill node || true
+          echo "Stopping Cuttlefish..."
+          cd cuttlefish
+          ./bin/stop_cvd || true
+          
+          echo "Cleanup complete"
