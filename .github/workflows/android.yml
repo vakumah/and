@@ -1,72 +1,49 @@
-name: macOS VNC via bore.pub
+name: macOS Rustdesk Remote
 
 on: workflow_dispatch
 
 jobs:
-  vnc-tunnel:
+  rustdesk:
     runs-on: macos-latest
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Aktifkan VNC Server
+      - name: Download & Install Rustdesk
         run: |
-          # Aktifkan Remote Management (VNC)
-          sudo /System/Library/CoreServices/RemoteManagement/ARDAgent.app/Contents/Resources/kickstart \
-            -activate -configure -access -on \
-            -clientopts -setvnclegacy -vnclegacy yes \
-            -restart -agent -menu
+          # Unduh Rustdesk untuk macOS (ARM64)
+          curl -L -o rustdesk.dmg https://github.com/rustdesk/rustdesk/releases/download/1.2.3/rustdesk-1.2.3-aarch64.dmg
+          hdiutil attach rustdesk.dmg
+          sudo cp -r /Volumes/RustDesk/RustDesk.app /Applications/
+          hdiutil detach /Volumes/RustDesk
 
-          # Set password VNC (ganti 'password-kamu' dengan password pilihanmu)
-          echo "password-kamu" | perl -we 'BEGIN { @k = unpack "C*", pack "H*", "1734516E8BA8C5E2FF1C39567390ADCA" }; $_ = <>; chomp; s/^(.{8}).*/$1/; @p = unpack "C*", $_; foreach (@k) { printf "%02X", $_ ^ (shift @p || 0) }; print "\n"' | sudo tee /Library/Preferences/com.apple.VNCSettings.txt
-
-          # Restart service
-          sudo /System/Library/CoreServices/RemoteManagement/ARDAgent.app/Contents/Resources/kickstart -restart -agent
-
-      - name: Setup bore tunnel manual
+      - name: Jalankan Rustdesk Headless
         run: |
-          # Buat direktori kerja
-          mkdir -p /tmp/bore
+          # Ganti password sesuai keinginan (minimal 6 karakter)
+          PASSWORD="rahasia123"
 
-          # Unduh bore binary untuk arm64 macOS
-          curl -L https://github.com/ekzhang/bore/releases/download/v0.4.0/bore-v0.4.0-aarch64-apple-darwin.tar.gz -o /tmp/bore/bore.tar.gz
-          tar -xzf /tmp/bore/bore.tar.gz -C /tmp/bore
-          chmod +x /tmp/bore/bore
+          # Jalankan service Rustdesk di background
+          /Applications/RustDesk.app/Contents/MacOS/RustDesk --service --password "$PASSWORD" &
+          
+          # Tunggu hingga service siap
+          sleep 10
 
-          # Jalankan bore di background, arahkan output ke file log
-          /tmp/bore/bore local 5900 --to bore.pub > /tmp/bore/bore.log 2>&1 &
-          BORE_PID=$!
-          echo "Bore PID: $BORE_PID"
-
-          # Tunggu hingga bore memberikan info port (maks 30 detik)
-          timeout=30
-          while [ $timeout -gt 0 ]; do
-            if grep -q "listening at" /tmp/bore/bore.log; then
-              break
-            fi
-            sleep 1
-            timeout=$((timeout-1))
-          done
-
-          if [ $timeout -eq 0 ]; then
-            echo "Gagal mendapatkan tunnel dalam 30 detik"
-            exit 1
+          # Baca file ID (lokasi default)
+          ID_FILE="$HOME/Library/Application Support/rustdesk/config/ID"
+          if [ -f "$ID_FILE" ]; then
+            ID=$(cat "$ID_FILE")
+          else
+            ID="(ID belum tergenerate, cek log)"
           fi
 
-          # Ekstrak port dari log
-          PORT=$(grep -o 'bore\.pub:[0-9]*' /tmp/bore/bore.log | head -1 | cut -d':' -f2)
-          echo "✅ Tunnel tersedia di: bore.pub:$PORT"
-          echo "BORE_PORT=$PORT" >> $GITHUB_ENV
-
-          # Tampilkan instruksi
-          echo ""
           echo "=================================================="
-          echo "Koneksikan VNC client kamu ke: bore.pub:$PORT"
-          echo "Password VNC: password-kamu (sesuai yang diset)"
-          echo "=================================================="
+          echo "✅ Rustdesk siap digunakan!"
+          echo "🔑 ID Remote: $ID"
+          echo "🔒 Password: $PASSWORD"
+          echo "🌐 Download client di: https://rustdesk.com/"
+          echo "📱 Konek menggunakan ID dan password di atas"
           echo ""
+          echo "⏳ Job akan berjalan maksimal 6 jam."
+          echo "   Tekan Ctrl+C di log untuk menghentikan lebih awal."
+          echo "=================================================="
 
-          # Jaga job tetap hidup selama 6 jam (maksimum GitHub Actions)
-          echo "Menjaga tunnel tetap aktif selama 6 jam..."
+          # Jaga job tetap hidup
           sleep 6h &
           wait $!
