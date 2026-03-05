@@ -1,64 +1,69 @@
-name: macOS NoMachine Remote Desktop
-
-on: workflow_dispatch
+name: macOS VNC - CLOUDFLARE
+on:
+  workflow_dispatch
 
 jobs:
-  nomachine:
+  build:
     runs-on: macos-latest
+    timeout-minutes: 9999
+
     steps:
-      - name: Download & Install NoMachine
+      - name: Install Cloudflared
         run: |
-          curl -L -o nomachine.dmg https://download.nomachine.com/download/8.14/MacOSX/NoMachine-8.14.2.dmg
-          hdiutil attach nomachine.dmg -nobrowse
-          sudo cp -r /Volumes/NoMachine/NoMachine.app /Applications/
-          hdiutil detach /Volumes/NoMachine
+          brew install cloudflare/cloudflare/cloudflared
+          echo "✅ Cloudflared Installed!"
 
-      - name: Start NoMachine Server
+      - name: Enable VNC/Screen Sharing
         run: |
-          # Jalankan server
-          sudo /Applications/NoMachine.app/Contents/MacOS/nxserver --start
-          sleep 5
-          
-          # Set password (ganti '123456' dengan PIN pilihanmu)
-          sudo /Applications/NoMachine.app/Contents/MacOS/nxserver --userpasswd runner:123456
-          
-          # Dapatkan IP lokal
-          IP=$(ifconfig | grep inet | grep -v 127.0.0.1 | head -1 | awk '{print $2}')
-          
-          echo "=================================================="
-          echo "✅ NoMachine siap digunakan!"
-          echo "🔌 IP Address: $IP"
-          echo "🔑 Port: 4000 (default)"
-          echo "🔑 Username: runner"
-          echo "🔑 Password: 123456"
-          echo ""
-          echo "📱 Dari Android:"
-          echo "   1. Install NoMachine dari Play Store"
-          echo "   2. Buka app, klik '+', masukkan IP $IP"
-          echo "   3. Login dengan username/password di atas"
-          echo ""
-          echo "⚠️ BUTUH TUNNEL: Karena IP di atas IP lokal, kamu perlu tunnel"
-          echo "   Gunakan bore atau ngrok untuk port 4000"
-          echo "=================================================="
+          sudo /System/Library/CoreServices/RemoteManagement/ARDAgent.app/Contents/Resources/kickstart -activate -configure -access -on -restart -agent -privs -all -allowAccessFor -allUsers
+          sudo defaults write /var/db/launchd.db/com.apple.launchd/overrides.plist com.apple.screensharing -dict Disabled -bool false
+          echo "✅ VNC Enabled!"
 
-      - name: Setup bore tunnel untuk NoMachine
+      - name: Set VNC Password (Legacy VNC)
+        shell: bash
         run: |
-          # Download bore
-          curl -L https://github.com/ekzhang/bore/releases/download/v0.4.0/bore-v0.4.0-aarch64-apple-darwin.tar.gz -o bore.tar.gz
-          tar -xzf bore.tar.gz
-          chmod +x bore
-          
-          # Jalankan tunnel untuk port 4000 (NoMachine)
-          ./bore local 4000 --to bore.pub > bore.log 2>&1 &
-          sleep 5
-          
-          PORT=$(grep -o 'bore\.pub:[0-9]*' bore.log | head -1 | cut -d':' -f2)
-          
-          echo "=================================================="
-          echo "🌐 Tunnel tersedia di: bore.pub:$PORT"
-          echo "📱 Di Android, masukkan alamat: bore.pub:$PORT"
-          echo "   Username: runner, Password: 123456"
-          echo "=================================================="
-          
-          sleep 6h &
-          wait $!
+          set -e
+          # Ensure RemoteManagement directories exist and proper ownership
+          sudo mkdir -p /Library/Preferences
+          # Use kickstart with sudo to set legacy VNC password
+          echo "P@ssw0rd123!" | sudo /System/Library/CoreServices/RemoteManagement/ARDAgent.app/Contents/Resources/kickstart \
+            -activate -configure -access -on -restart -agent -privs -all \
+            -clientopts -setvnclegacy -vnclegacy yes -setvncpw -vncpw P@ssw0rd123!
+          # Also set system VNC password key (some runners require this)
+          sudo /usr/libexec/PlistBuddy -c "Add :VNCLegacyPasswords array" /Library/Preferences/com.apple.RemoteManagement.plist 2>/dev/null || true
+          sudo /usr/libexec/PlistBuddy -c "Delete :VNCLegacyPasswords:0" /Library/Preferences/com.apple.RemoteManagement.plist 2>/dev/null || true
+          HASH=$(python3 - <<'PY'
+import sys,hashlib
+print(hashlib.md5(b"P@ssw0rd123!").hexdigest())
+PY
+)
+          sudo /usr/libexec/PlistBuddy -c "Add :VNCLegacyPasswords:0 data $(echo $HASH | xxd -r -p | base64)" /Library/Preferences/com.apple.RemoteManagement.plist
+          sudo launchctl unload /System/Library/LaunchDaemons/com.apple.screensharing.plist 2>/dev/null || true
+          sudo launchctl load -w /System/Library/LaunchDaemons/com.apple.screensharing.plist
+          echo "✅ VNC Password Set!"
+
+      - name: Start Cloudflare Tunnel
+        run: |
+          echo "============================================"
+          echo "🚀 macOS VNC - CLOUDFLARE TUNNEL"
+          echo "============================================"
+          echo ""
+          cloudflared tunnel --url tcp://localhost:5900 > tunnel.log 2>&1 &
+          sleep 15
+          cat tunnel.log | grep -o 'https://[^[:space:]]*trycloudflare.com' || echo "Check logs for tunnel URL"
+          echo ""
+          echo "✅ TUNNEL STARTED!"
+          echo ""
+          echo "📋 CONNECTION DETAILS:"
+          echo "   PASSWORD: P@ssw0rd123!"
+          echo "   OS: macOS Monterey/Ventura"
+          echo "   Architecture: $(uname -m)"
+          echo "============================================"
+
+      - name: Keep Session Alive
+        run: |
+          echo "⏳ Session Active - Keeping alive..."
+          while true; do
+            sleep 60
+            echo "✓ Active - $(date '+%H:%M:%S')"
+          done
