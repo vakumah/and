@@ -1,6 +1,6 @@
-name: macOS VNC - CLOUDFLARE
+name: macOS VNC - BORE
 on:
-  workflow_dispatch
+  workflow_dispatch:
 
 jobs:
   build:
@@ -8,10 +8,22 @@ jobs:
     timeout-minutes: 9999
 
     steps:
-      - name: Install Cloudflared
+      - name: Install Bore
         run: |
-          brew install cloudflare/cloudflare/cloudflared
-          echo "✅ Cloudflared Installed!"
+          echo "Mencari versi Bore terbaru..."
+          ARCH=$(uname -m)
+          if [ "$ARCH" = "arm64" ]; then TARGET="aarch64-apple-darwin"; else TARGET="x86_64-apple-darwin"; fi
+          
+          DOWNLOAD_URL=$(curl -s https://api.github.com/repos/ekzhang/bore/releases/latest | grep "browser_download_url.*bore-.*-$TARGET.tar.gz" | cut -d '"' -f 4)
+          
+          echo "Mengunduh dari: $DOWNLOAD_URL"
+          curl -L $DOWNLOAD_URL -o bore.tar.gz
+          tar -xzf bore.tar.gz
+          chmod +x bore
+          sudo mv bore /usr/local/bin/
+          
+          echo "✅ Bore Installed!"
+          bore --version
 
       - name: Enable VNC/Screen Sharing
         run: |
@@ -23,42 +35,52 @@ jobs:
         shell: bash
         run: |
           set -e
-          # Ensure RemoteManagement directories exist and proper ownership
           sudo mkdir -p /Library/Preferences
-          # Use kickstart with sudo to set legacy VNC password
+          
           echo "P@ssw0rd123!" | sudo /System/Library/CoreServices/RemoteManagement/ARDAgent.app/Contents/Resources/kickstart \
             -activate -configure -access -on -restart -agent -privs -all \
             -clientopts -setvnclegacy -vnclegacy yes -setvncpw -vncpw P@ssw0rd123!
-          # Also set system VNC password key (some runners require this)
+            
           sudo /usr/libexec/PlistBuddy -c "Add :VNCLegacyPasswords array" /Library/Preferences/com.apple.RemoteManagement.plist 2>/dev/null || true
           sudo /usr/libexec/PlistBuddy -c "Delete :VNCLegacyPasswords:0" /Library/Preferences/com.apple.RemoteManagement.plist 2>/dev/null || true
-          HASH=$(python3 - <<'PY'
-import sys,hashlib
-print(hashlib.md5(b"P@ssw0rd123!").hexdigest())
-PY
-)
+          
+          HASH=$(python3 -c 'import hashlib; print(hashlib.md5(b"P@ssw0rd123!").hexdigest())')
+          
           sudo /usr/libexec/PlistBuddy -c "Add :VNCLegacyPasswords:0 data $(echo $HASH | xxd -r -p | base64)" /Library/Preferences/com.apple.RemoteManagement.plist
           sudo launchctl unload /System/Library/LaunchDaemons/com.apple.screensharing.plist 2>/dev/null || true
           sudo launchctl load -w /System/Library/LaunchDaemons/com.apple.screensharing.plist
           echo "✅ VNC Password Set!"
 
-      - name: Start Cloudflare Tunnel
+      - name: Start Bore Tunnel
         run: |
           echo "============================================"
-          echo "🚀 macOS VNC - CLOUDFLARE TUNNEL"
+          echo "🚀 macOS VNC - BORE TUNNEL"
           echo "============================================"
           echo ""
-          cloudflared tunnel --url tcp://localhost:5900 > tunnel.log 2>&1 &
-          sleep 15
-          cat tunnel.log | grep -o 'https://[^[:space:]]*trycloudflare.com' || echo "Check logs for tunnel URL"
-          echo ""
-          echo "✅ TUNNEL STARTED!"
-          echo ""
-          echo "📋 CONNECTION DETAILS:"
-          echo "   PASSWORD: P@ssw0rd123!"
-          echo "   OS: macOS Monterey/Ventura"
-          echo "   Architecture: $(uname -m)"
-          echo "============================================"
+          
+          # Menjalankan bore di background untuk port 5900 (VNC)
+          bore local 5900 --to bore.network > tunnel.log 2>&1 &
+          
+          # Tunggu sebentar agar bore selesai melakukan koneksi
+          sleep 5
+          
+          # Mengekstrak port public dari log bore
+          BORE_PORT=$(cat tunnel.log | grep -Eo 'bore.network:[0-9]+' | cut -d':' -f2 | head -n 1)
+          
+          if [ -z "$BORE_PORT" ]; then
+            echo "❌ Gagal mendapatkan port Bore. Berikut adalah lognya:"
+            cat tunnel.log
+          else
+            echo "✅ TUNNEL STARTED!"
+            echo ""
+            echo "📋 CONNECTION DETAILS:"
+            echo "   VNC SERVER: bore.network:$BORE_PORT"
+            echo "   PASSWORD  : P@ssw0rd123!"
+            echo "   OS        : macOS (Architecture: $(uname -m))"
+            echo "============================================"
+            echo "💡 Buka aplikasi VNC Viewer (seperti RealVNC atau TigerVNC)"
+            echo "💡 Masukkan address di atas pada kolom koneksi."
+          fi
 
       - name: Keep Session Alive
         run: |
@@ -67,3 +89,4 @@ PY
             sleep 60
             echo "✓ Active - $(date '+%H:%M:%S')"
           done
+          
