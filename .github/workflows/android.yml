@@ -1,50 +1,72 @@
-name: macOS dengan VNC dan bore.pub
+name: macOS VNC via bore.pub
 
-on: workflow_dispatch # Memungkinkan kamu menjalankan workflow secara manual
+on: workflow_dispatch
 
 jobs:
-  build:
-    runs-on: macos-latest # Menjalankan di runner macOS
-
+  vnc-tunnel:
+    runs-on: macos-latest
     steps:
-      - name: Checkout Repository
+      - name: Checkout
         uses: actions/checkout@v4
 
       - name: Aktifkan VNC Server
         run: |
-          # Mengaktifkan Remote Management (VNC)
+          # Aktifkan Remote Management (VNC)
           sudo /System/Library/CoreServices/RemoteManagement/ARDAgent.app/Contents/Resources/kickstart \
             -activate -configure -access -on \
             -clientopts -setvnclegacy -vnclegacy yes \
             -restart -agent -menu
-          
-          # Mengatur password VNC (ganti 'password-kamu' dengan password yang kuat)
+
+          # Set password VNC (ganti 'password-kamu' dengan password pilihanmu)
           echo "password-kamu" | perl -we 'BEGIN { @k = unpack "C*", pack "H*", "1734516E8BA8C5E2FF1C39567390ADCA" }; $_ = <>; chomp; s/^(.{8}).*/$1/; @p = unpack "C*", $_; foreach (@k) { printf "%02X", $_ ^ (shift @p || 0) }; print "\n"' | sudo tee /Library/Preferences/com.apple.VNCSettings.txt
-          
-          # Memulai ulang service agar perubahan diterapkan
+
+          # Restart service
           sudo /System/Library/CoreServices/RemoteManagement/ARDAgent.app/Contents/Resources/kickstart -restart -agent
-        shell: bash
 
-      - name: Buat Tunnel dengan bore.pub
-        uses: codetalkio/expose-tunnel@v1.5.0
-        id: expose-tunnel
-        with:
-          service: bore.pub   # Menggunakan layanan bore.pub
-          port: 5900          # Port VNC default
-          blocking: 180m      # Jaga tunnel tetap hidup selama 3 jam (maks 120m atau 30m? Sesuaikan, dokumentasi menyebut 30m tapi parameter menerima 180m. Sebaiknya 30m atau 120m)
-
-      - name: Tampilkan URL Tunnel
+      - name: Setup bore tunnel manual
         run: |
-          echo "Tunnel VNC telah dibuat!"
-          echo "Koneksikan VNC client kamu ke: ${{ steps.expose-tunnel.outputs.tunnel-url }}"
-          echo "Gunakan password VNC yang sudah kamu atur di langkah sebelumnya."
-          
-          # Menjaga job tetap berjalan agar tunnel tidak mati
-          # Ini penting karena step expose-tunnel di atas sudah 'blocking' selama 30 menit.
-          # Setelah 30 menit, workflow akan lanjut ke step ini. Kita buat loop agar tetap hidup.
-          # Catatan: Total waktu hidup maksimal runner GitHub Actions adalah 6 jam.
-          echo "Workflow akan berjalan selama 6 jam. Tekan Ctrl+C untuk menghentikannya lebih awal di log."
-          while true; do
-            sleep 3600
+          # Buat direktori kerja
+          mkdir -p /tmp/bore
+
+          # Unduh bore binary untuk arm64 macOS
+          curl -L https://github.com/ekzhang/bore/releases/download/v0.4.0/bore-v0.4.0-aarch64-apple-darwin.tar.gz -o /tmp/bore/bore.tar.gz
+          tar -xzf /tmp/bore/bore.tar.gz -C /tmp/bore
+          chmod +x /tmp/bore/bore
+
+          # Jalankan bore di background, arahkan output ke file log
+          /tmp/bore/bore local 5900 --to bore.pub > /tmp/bore/bore.log 2>&1 &
+          BORE_PID=$!
+          echo "Bore PID: $BORE_PID"
+
+          # Tunggu hingga bore memberikan info port (maks 30 detik)
+          timeout=30
+          while [ $timeout -gt 0 ]; do
+            if grep -q "listening at" /tmp/bore/bore.log; then
+              break
+            fi
+            sleep 1
+            timeout=$((timeout-1))
           done
-        shell: bash
+
+          if [ $timeout -eq 0 ]; then
+            echo "Gagal mendapatkan tunnel dalam 30 detik"
+            exit 1
+          fi
+
+          # Ekstrak port dari log
+          PORT=$(grep -o 'bore\.pub:[0-9]*' /tmp/bore/bore.log | head -1 | cut -d':' -f2)
+          echo "✅ Tunnel tersedia di: bore.pub:$PORT"
+          echo "BORE_PORT=$PORT" >> $GITHUB_ENV
+
+          # Tampilkan instruksi
+          echo ""
+          echo "=================================================="
+          echo "Koneksikan VNC client kamu ke: bore.pub:$PORT"
+          echo "Password VNC: password-kamu (sesuai yang diset)"
+          echo "=================================================="
+          echo ""
+
+          # Jaga job tetap hidup selama 6 jam (maksimum GitHub Actions)
+          echo "Menjaga tunnel tetap aktif selama 6 jam..."
+          sleep 6h &
+          wait $!
