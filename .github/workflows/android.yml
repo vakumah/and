@@ -27,29 +27,49 @@ jobs:
           # Ganti password sesuai keinginan (minimal 6 karakter)
           PASSWORD="rahasia123"
           
-          # Jalankan service Rustdesk di background
-          /Applications/RustDesk.app/Contents/MacOS/RustDesk --service --password "$PASSWORD" &
+          # Hapus konfigurasi lama jika ada (agar fresh)
+          rm -rf "$HOME/Library/Application Support/rustdesk"
           
-          # Tunggu hingga service siap dan file ID tergenerate (max 30 detik)
-          ID_FILE="$HOME/Library/Application Support/rustdesk/config/ID"
-          echo "Menunggu file ID muncul..."
-          for i in {1..30}; do
-            if [ -f "$ID_FILE" ]; then
+          # Jalankan service Rustdesk di background
+          echo "Menjalankan RustDesk service..."
+          /Applications/RustDesk.app/Contents/MacOS/RustDesk --service --password "$PASSWORD" &
+          RUSTDESK_PID=$!
+          
+          # Tunggu hingga proses menghasilkan file ID (maks 60 detik)
+          echo "Menunggu file ID tergenerate..."
+          ID=""
+          for i in {1..60}; do
+            # Cek di lokasi umum
+            if [ -f "$HOME/Library/Application Support/rustdesk/config/ID" ]; then
+              ID=$(cat "$HOME/Library/Application Support/rustdesk/config/ID")
+              break
+            fi
+            # Cek juga di lokasi alternatif
+            if [ -f "$HOME/.config/rustdesk/config/ID" ]; then
+              ID=$(cat "$HOME/.config/rustdesk/config/ID")
               break
             fi
             sleep 1
           done
           
-          # Baca ID
-          if [ -f "$ID_FILE" ]; then
-            ID=$(cat "$ID_FILE")
-          else
-            ID="(file ID tidak ditemukan, cek manual)"
+          # Jika masih tidak ditemukan, coba dengan find
+          if [ -z "$ID" ]; then
+            echo "Mencari file ID dengan find..."
+            ID_FILE=$(find "$HOME" -name "ID" -path "*/rustdesk/config/ID" 2>/dev/null | head -1)
+            if [ -n "$ID_FILE" ]; then
+              ID=$(cat "$ID_FILE")
+            fi
           fi
           
+          # Tampilkan hasil
           echo "=================================================="
           echo "✅ Rustdesk siap digunakan!"
-          echo "🔑 ID Remote: $ID"
+          if [ -n "$ID" ]; then
+            echo "🔑 ID Remote: $ID"
+          else
+            echo "🔑 ID Remote: (TIDAK DITEMUKAN - coba jalankan ulang)"
+            echo "   Proses mungkin masih memuat, cek dengan: ps aux | grep RustDesk"
+          fi
           echo "🔒 Password: $PASSWORD"
           echo "🌐 Download client Android di: https://rustdesk.com/"
           echo "📱 Buka RustDesk di Android, masukkan ID dan password di atas"
