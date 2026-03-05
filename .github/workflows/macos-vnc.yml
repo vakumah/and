@@ -1,4 +1,4 @@
-name: macOS VNC - BORE
+BOREm: macOS VNC - BORE
 on:
   workflow_dispatch:
 
