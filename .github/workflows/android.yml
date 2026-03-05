@@ -1,163 +1,50 @@
-name: Cuttlefish Development Environment
+name: macOS dengan VNC dan bore.pub
 
-on:
-  workflow_dispatch:
-    inputs:
-      keep_alive_minutes:
-        description: 'Keep environment alive (minutes)'
-        required: false
-        default: '60'
+on: workflow_dispatch # Memungkinkan kamu menjalankan workflow secara manual
 
 jobs:
-  cuttlefish-setup:
-    runs-on: ubuntu-24.04-arm
-    timeout-minutes: 360
-    
+  build:
+    runs-on: macos-latest # Menjalankan di runner macOS
+
     steps:
-      - name: Checkout repository
+      - name: Checkout Repository
         uses: actions/checkout@v4
 
-      - name: Check KVM availability
+      - name: Aktifkan VNC Server
         run: |
-          echo "Checking KVM support..."
-          if [ -e /dev/kvm ]; then
-            echo "✓ /dev/kvm exists"
-            ls -la /dev/kvm
-          else
-            echo "✗ /dev/kvm not found"
-          fi
+          # Mengaktifkan Remote Management (VNC)
+          sudo /System/Library/CoreServices/RemoteManagement/ARDAgent.app/Contents/Resources/kickstart \
+            -activate -configure -access -on \
+            -clientopts -setvnclegacy -vnclegacy yes \
+            -restart -agent -menu
           
-          echo "Checking CPU virtualization support..."
-          if grep -q -E 'vmx|svm' /proc/cpuinfo; then
-            echo "✓ CPU supports virtualization"
-          else
-            echo "✗ CPU does not support virtualization"
-          fi
+          # Mengatur password VNC (ganti 'password-kamu' dengan password yang kuat)
+          echo "password-kamu" | perl -we 'BEGIN { @k = unpack "C*", pack "H*", "1734516E8BA8C5E2FF1C39567390ADCA" }; $_ = <>; chomp; s/^(.{8}).*/$1/; @p = unpack "C*", $_; foreach (@k) { printf "%02X", $_ ^ (shift @p || 0) }; print "\n"' | sudo tee /Library/Preferences/com.apple.VNCSettings.txt
+          
+          # Memulai ulang service agar perubahan diterapkan
+          sudo /System/Library/CoreServices/RemoteManagement/ARDAgent.app/Contents/Resources/kickstart -restart -agent
+        shell: bash
 
-      - name: Enable KVM group perms
-        run: |
-          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
-          sudo udevadm control --reload-rules
-          sudo udevadm trigger --name-match=kvm
-          sudo chmod 666 /dev/kvm || true
-          ls -la /dev/kvm || echo "KVM device not available"
+      - name: Buat Tunnel dengan bore.pub
+        uses: codetalkio/expose-tunnel@v1.5.0
+        id: expose-tunnel
+        with:
+          service: bore.pub   # Menggunakan layanan bore.pub
+          port: 5900          # Port VNC default
+          blocking: 180m      # Jaga tunnel tetap hidup selama 3 jam (maks 120m atau 30m? Sesuaikan, dokumentasi menyebut 30m tapi parameter menerima 180m. Sebaiknya 30m atau 120m)
 
-      - name: Install dependencies
+      - name: Tampilkan URL Tunnel
         run: |
-          sudo apt-get update
-          sudo apt-get install -y \
-            qemu-kvm \
-            libvirt-daemon-system \
-            libvirt-clients \
-            bridge-utils \
-            cpu-checker \
-            wget \
-            unzip \
-            git
-
-      - name: Verify KVM
-        run: |
-          kvm-ok || echo "KVM check failed, continuing anyway..."
-          groups
-          id
-
-      - name: Download Cuttlefish
-        run: |
-          echo "Downloading Cuttlefish host package..."
-          wget https://ci.android.com/builds/latest/branches/aosp-main/targets/aosp_cf_arm64_phone-trunk_staging-userdebug/view/cvd-host_package.tar.gz
+          echo "Tunnel VNC telah dibuat!"
+          echo "Koneksikan VNC client kamu ke: ${{ steps.expose-tunnel.outputs.tunnel-url }}"
+          echo "Gunakan password VNC yang sudah kamu atur di langkah sebelumnya."
           
-          echo "Extracting Cuttlefish..."
-          mkdir -p cuttlefish
-          tar xzf cvd-host_package.tar.gz -C cuttlefish
-          
-          echo "Cuttlefish extracted to: $(pwd)/cuttlefish"
-          ls -la cuttlefish/
-
-      - name: Download Android image
-        run: |
-          echo "Downloading Android system image..."
-          cd cuttlefish
-          wget https://ci.android.com/builds/latest/branches/aosp-main/targets/aosp_cf_arm64_phone-trunk_staging-userdebug/view/cvd-host_package.tar.gz -O image.zip || \
-          echo "Using alternative image source..."
-          
-      - name: Setup Cloudflare Tunnel
-        env:
-          CLOUDFLARE_TUNNEL_TOKEN: ${{ secrets.CLOUDFLARE_TUNNEL_TOKEN }}
-        run: |
-          if [ -z "$CLOUDFLARE_TUNNEL_TOKEN" ]; then
-            echo "⚠️  CLOUDFLARE_TUNNEL_TOKEN not set in secrets"
-            echo "Skipping Cloudflare Tunnel setup"
-            echo "To enable: Add CLOUDFLARE_TUNNEL_TOKEN to repository secrets"
-            exit 0
-          fi
-          
-          echo "Installing cloudflared..."
-          wget -q https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-arm64
-          sudo mv cloudflared-linux-arm64 /usr/local/bin/cloudflared
-          sudo chmod +x /usr/local/bin/cloudflared
-          
-          echo "Starting Cloudflare Tunnel..."
-          cloudflared tunnel --no-autoupdate run --token $CLOUDFLARE_TUNNEL_TOKEN &
-          
-          sleep 5
-          echo "✓ Cloudflare Tunnel started"
-
-      - name: Start Cuttlefish
-        run: |
-          cd cuttlefish
-          export PATH=$PATH:$(pwd)/bin
-          export HOME=$(pwd)
-          
-          echo "Launching Cuttlefish..."
-          ./bin/launch_cvd --daemon || echo "Launch failed, check logs"
-          
-          sleep 10
-          
-          echo "Checking Cuttlefish status..."
-          ./bin/cvd_status || echo "Status check failed"
-
-      - name: Display connection info
-        run: |
-          echo "================================"
-          echo "Cuttlefish Development Environment"
-          echo "================================"
-          echo ""
-          echo "ADB Connection:"
-          echo "  adb connect localhost:6520"
-          echo ""
-          echo "WebRTC Interface:"
-          echo "  https://localhost:8443"
-          echo ""
-          if [ ! -z "${{ secrets.CLOUDFLARE_TUNNEL_TOKEN }}" ]; then
-            echo "Cloudflare Tunnel: Active"
-            echo "Access via your configured tunnel domain"
-          else
-            echo "Cloudflare Tunnel: Not configured"
-          fi
-          echo ""
-          echo "Environment will stay alive for ${{ github.event.inputs.keep_alive_minutes }} minutes"
-          echo "================================"
-
-      - name: Keep alive
-        run: |
-          echo "Keeping environment alive..."
-          MINUTES=${{ github.event.inputs.keep_alive_minutes }}
-          SECONDS=$((MINUTES * 60))
-          
-          echo "Will run for $MINUTES minutes ($SECONDS seconds)"
-          
-          for i in $(seq 1 $MINUTES); do
-            echo "[$i/$MINUTES] Environment active... ($(date))"
-            sleep 60
+          # Menjaga job tetap berjalan agar tunnel tidak mati
+          # Ini penting karena step expose-tunnel di atas sudah 'blocking' selama 30 menit.
+          # Setelah 30 menit, workflow akan lanjut ke step ini. Kita buat loop agar tetap hidup.
+          # Catatan: Total waktu hidup maksimal runner GitHub Actions adalah 6 jam.
+          echo "Workflow akan berjalan selama 6 jam. Tekan Ctrl+C untuk menghentikannya lebih awal di log."
+          while true; do
+            sleep 3600
           done
-          
-          echo "Time limit reached, shutting down..."
-
-      - name: Cleanup
-        if: always()
-        run: |
-          echo "Stopping Cuttlefish..."
-          cd cuttlefish
-          ./bin/stop_cvd || true
-          
-          echo "Cleanup complete"
+        shell: bash
