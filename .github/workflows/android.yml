@@ -1,6 +1,6 @@
-name: macOS VNC - CLOUDFLARE
+name: macOS VNC - BORE
 on:
-  workflow_dispatch
+  workflow_dispatch:      # perbaikan: tambahkan titik dua
 
 jobs:
   build:
@@ -8,11 +8,6 @@ jobs:
     timeout-minutes: 9999
 
     steps:
-      - name: Install Cloudflared
-        run: |
-          brew install cloudflare/cloudflare/cloudflared
-          echo "✅ Cloudflared Installed!"
-
       - name: Enable VNC/Screen Sharing
         run: |
           sudo /System/Library/CoreServices/RemoteManagement/ARDAgent.app/Contents/Resources/kickstart -activate -configure -access -on -restart -agent -privs -all -allowAccessFor -allUsers
@@ -23,47 +18,57 @@ jobs:
         shell: bash
         run: |
           set -e
-          # Ensure RemoteManagement directories exist and proper ownership
           sudo mkdir -p /Library/Preferences
-          # Use kickstart with sudo to set legacy VNC password
           echo "P@ssw0rd123!" | sudo /System/Library/CoreServices/RemoteManagement/ARDAgent.app/Contents/Resources/kickstart \
             -activate -configure -access -on -restart -agent -privs -all \
             -clientopts -setvnclegacy -vnclegacy yes -setvncpw -vncpw P@ssw0rd123!
-          # Also set system VNC password key (some runners require this)
           sudo /usr/libexec/PlistBuddy -c "Add :VNCLegacyPasswords array" /Library/Preferences/com.apple.RemoteManagement.plist 2>/dev/null || true
           sudo /usr/libexec/PlistBuddy -c "Delete :VNCLegacyPasswords:0" /Library/Preferences/com.apple.RemoteManagement.plist 2>/dev/null || true
-          HASH=$(python3 - <<'PY'
-import sys,hashlib
-print(hashlib.md5(b"P@ssw0rd123!").hexdigest())
-PY
-)
+          HASH=$(python3 -c "import hashlib; print(hashlib.md5(b'P@ssw0rd123!').hexdigest())")
           sudo /usr/libexec/PlistBuddy -c "Add :VNCLegacyPasswords:0 data $(echo $HASH | xxd -r -p | base64)" /Library/Preferences/com.apple.RemoteManagement.plist
           sudo launchctl unload /System/Library/LaunchDaemons/com.apple.screensharing.plist 2>/dev/null || true
           sudo launchctl load -w /System/Library/LaunchDaemons/com.apple.screensharing.plist
           echo "✅ VNC Password Set!"
 
-      - name: Start Cloudflare Tunnel
+      - name: Install and Run Bore Tunnel
         run: |
+          set -e
+          echo "Installing Rust and bore..."
+          if ! command -v cargo &> /dev/null; then
+            curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+            source $HOME/.cargo/env
+          fi
+          cargo install bore-cli
+          echo "✅ bore installed"
+          
           echo "============================================"
-          echo "🚀 macOS VNC - CLOUDFLARE TUNNEL"
+          echo "🚀 macOS VNC - BORE TUNNEL"
           echo "============================================"
           echo ""
-          cloudflared tunnel --url tcp://localhost:5900 > tunnel.log 2>&1 &
-          sleep 15
-          cat tunnel.log | grep -o 'https://[^[:space:]]*trycloudflare.com' || echo "Check logs for tunnel URL"
-          echo ""
-          echo "✅ TUNNEL STARTED!"
+          
+          # Start bore tunnel in background and save logs
+          bore local 5900 --to bore.pub > bore.log 2>&1 &
+          BORE_PID=$!
+          
+          # Wait for bore to initialize and extract the public address
+          sleep 10
+          PUBLIC_ADDR=$(grep -o 'bore.pub:[0-9]*' bore.log | head -1)
+          if [ -n "$PUBLIC_ADDR" ]; then
+            echo "✅ Tunnel is running at: $PUBLIC_ADDR"
+          else
+            echo "⚠️ Could not detect bore address. Check bore.log manually:"
+            cat bore.log
+          fi
+          
           echo ""
           echo "📋 CONNECTION DETAILS:"
           echo "   PASSWORD: P@ssw0rd123!"
-          echo "   OS: macOS Monterey/Ventura"
+          echo "   VNC ADDRESS: ${PUBLIC_ADDR:-unknown}"
+          echo "   OS: macOS"
           echo "   Architecture: $(uname -m)"
           echo "============================================"
-
-      - name: Keep Session Alive
-        run: |
-          echo "⏳ Session Active - Keeping alive..."
-          while true; do
-            sleep 60
-            echo "✓ Active - $(date '+%H:%M:%S')"
-          done
+          echo ""
+          echo "⏳ Tunnel is running in the background. This session will stay alive."
+          
+          # Wait for the bore process to keep the step running
+          wait $BORE_PID
