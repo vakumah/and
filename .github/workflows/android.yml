@@ -1,65 +1,82 @@
-name: macOS Chrome Remote Desktop
+name: macOS xRDP (RDP via bore.pub)
 
 on: workflow_dispatch
 
 jobs:
-  crd:
+  xrdp:
     runs-on: macos-latest
     steps:
-      - name: Install Chrome & CRD
+      - name: Install xRDP for macOS
         run: |
-          brew update
-          brew install --cask google-chrome
-          curl -L -o crd.dmg https://dl.google.com/chrome-remote-desktop/chromeremotedesktop.dmg
-          hdiutil attach crd.dmg
-          sudo installer -pkg /Volumes/ChromeRemoteDesktop/ChromeRemoteDesktop.pkg -target /
-          hdiutil detach /Volumes/ChromeRemoteDesktop
+          # Unduh xRDP package untuk macOS (ARM64)
+          curl -L -o xrdp.pkg https://github.com/neutrinolabs/xrdp/releases/download/v0.10.0-ard-macos-v2/xrdp-0.10.0-ard-macos-arm64.pkg
+          
+          # Install package
+          sudo installer -pkg xrdp.pkg -target /
+          
+          # Verifikasi instalasi
+          ls -la /usr/local/share/xrdp/
 
-      - name: Dapatkan Kode Setup
+      - name: Enable Screen Sharing (prasyarat xRDP)
         run: |
-          echo "==========================================================="
-          echo "📱 LANGKAH 1: Buka link berikut di browser MANUAL"
-          echo "https://remotedesktop.google.com/headless"
-          echo "==========================================================="
-          echo "🔐 Login dengan Google Account kamu"
-          echo "➡️ Klik 'Setup' → 'Next' → 'Authorize'"
-          echo "➡️ Pilih 'Mac' dan klik 'Next'"
-          echo "➡️ Copy perintah yang muncul (panjang, mulai dari DISPLAY=...)"
-          echo ""
-          echo "📝 LANGKAH 2: Paste perintah tersebut di bawah ini"
-          echo "==========================================================="
-          # Minta input dari user secara manual (workaround)
-          echo "Setelah dapat perintah, jalankan step selanjutnya secara manual"
-          exit 1
+          # Aktifkan Screen Sharing macOS
+          sudo /System/Library/CoreServices/RemoteManagement/ARDAgent.app/Contents/Resources/kickstart \
+            -activate -configure -access -on \
+            -clientopts -setvnclegacy -vnclegacy yes \
+            -restart -agent -menu
+          
+          # Set password (ganti 'password123' dengan password pilihanmu)
+          echo "password123" | perl -we 'BEGIN { @k = unpack "C*", pack "H*", "1734516E8BA8C5E2FF1C39567390ADCA" }; $_ = <>; chomp; s/^(.{8}).*/$1/; @p = unpack "C*", $_; foreach (@k) { printf "%02X", $_ ^ (shift @p || 0) }; print "\n"' | sudo tee /Library/Preferences/com.apple.VNCSettings.txt
+          
+          sudo /System/Library/CoreServices/RemoteManagement/ARDAgent.app/Contents/Resources/kickstart -restart -agent
 
-      - name: Jalankan Setup (Manual)
+      - name: Konfigurasi xRDP
         run: |
-          # GANTI BARIS INI DENGAN PERINTAH YANG DIDAPAT DARI GOOGLE
-          # Contoh:
-          # DISPLAY= /opt/google/chrome-remote-desktop/start-host \
-          #   --code="4/0AX4XfWi..." \
-          #   --redirect-url="https://remotedesktop.google.com/_/oauthredirect" \
-          #   --name=$(hostname)
+          # Buat file konfigurasi minimal
+          sudo mkdir -p /etc/xrdp
+          sudo tee /etc/xrdp/xrdp.ini > /dev/null << 'EOF'
+          [Globals]
+          port=3389
+          [Xvnc]
+          name=Xvnc
+          lib=libvnc.so
+          ip=127.0.0.1
+          port=5900
+          username=ask
+          password=ask
+          EOF
+          
+          # Jalankan xRDP service
+          sudo /usr/local/sbin/xrdp &
 
-          echo "⚠️  Kamu harus mengedit file workflow ini!"
-          echo "   1. Dapatkan perintah dari https://remotedesktop.google.com/headless"
-          echo "   2. Kembali ke repo, edit file .github/workflows/crd.yml"
-          echo "   3. Ganti baris ini dengan perintah tersebut"
-          echo "   4. Commit ulang, lalu jalankan lagi workflow"
-          exit 1
-
-      - name: Set PIN & Jaga Hidup
+      - name: Setup bore tunnel
         run: |
-          # Set PIN 6 digit (ganti 123456 dengan PINmu)
-          echo "123456" | ~/start-host --pin
-          echo ""
+          # Download bore binary
+          curl -L https://github.com/ekzhang/bore/releases/download/v0.4.0/bore-v0.4.0-aarch64-apple-darwin.tar.gz -o bore.tar.gz
+          tar -xzf bore.tar.gz
+          chmod +x bore
+          
+          # Jalankan tunnel untuk port RDP (3389)
+          ./bore local 3389 --to bore.pub > bore.log 2>&1 &
+          
+          # Tunggu hingga dapat port
+          sleep 5
+          PORT=$(grep -o 'bore\.pub:[0-9]*' bore.log | head -1 | cut -d':' -f2)
+          
           echo "=================================================="
-          echo "✅ SEMUA SELESAI!"
-          echo "🔗 Buka: https://remotedesktop.google.com/access"
-          echo "🔑 Masuk dengan Google Account yang sama"
-          echo "🖥️  Klik komputer '$(hostname)' dan masukkan PIN 123456"
+          echo "✅ xRDP siap digunakan!"
+          echo "🔌 Alamat RDP: bore.pub:$PORT"
+          echo "🔑 Username: runner (atau user yang aktif)"
+          echo "🔑 Password: password123 (sesuai yang diset)"
           echo ""
-          echo "⏳ Job berjalan 6 jam. Tutup jendela untuk stop."
+          echo "📱 Dari Android:"
+          echo "   1. Install Microsoft Remote Desktop dari Play Store"
+          echo "   2. Tambahkan PC baru: bore.pub:$PORT"
+          echo "   3. Masukkan username dan password di atas"
+          echo ""
+          echo "⏳ Job akan berjalan 6 jam. Tekan Ctrl+C untuk stop."
           echo "=================================================="
+          
+          # Jaga job tetap hidup
           sleep 6h &
           wait $!
