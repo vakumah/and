@@ -1,36 +1,65 @@
-name: macOS AnyDesk Remote
+name: macOS Chrome Remote Desktop
 
 on: workflow_dispatch
 
 jobs:
-  anydesk:
+  crd:
     runs-on: macos-latest
     steps:
-      - name: Download & Install AnyDesk
+      - name: Install Chrome & CRD
         run: |
-          curl -L -o AnyDesk.dmg https://download.anydesk.com/anydesk.dmg
-          hdiutil attach AnyDesk.dmg
-          sudo cp -r /Volumes/AnyDesk/AnyDesk.app /Applications/
-          hdiutil detach /Volumes/AnyDesk
+          brew update
+          brew install --cask google-chrome
+          curl -L -o crd.dmg https://dl.google.com/chrome-remote-desktop/chromeremotedesktop.dmg
+          hdiutil attach crd.dmg
+          sudo installer -pkg /Volumes/ChromeRemoteDesktop/ChromeRemoteDesktop.pkg -target /
+          hdiutil detach /Volumes/ChromeRemoteDesktop
 
-      - name: Start AnyDesk & Get ID
+      - name: Dapatkan Kode Setup
         run: |
-          # Jalankan AnyDesk di background
-          /Applications/AnyDesk.app/Contents/MacOS/AnyDesk --service &
-          sleep 5
-          
-          # Dapatkan ID
-          ID=$(/Applications/AnyDesk.app/Contents/MacOS/AnyDesk --get-id)
-          
-          # Set password
-          /Applications/AnyDesk.app/Contents/MacOS/AnyDesk --set-password rahasia123
-          
+          echo "==========================================================="
+          echo "📱 LANGKAH 1: Buka link berikut di browser MANUAL"
+          echo "https://remotedesktop.google.com/headless"
+          echo "==========================================================="
+          echo "🔐 Login dengan Google Account kamu"
+          echo "➡️ Klik 'Setup' → 'Next' → 'Authorize'"
+          echo "➡️ Pilih 'Mac' dan klik 'Next'"
+          echo "➡️ Copy perintah yang muncul (panjang, mulai dari DISPLAY=...)"
+          echo ""
+          echo "📝 LANGKAH 2: Paste perintah tersebut di bawah ini"
+          echo "==========================================================="
+          # Minta input dari user secara manual (workaround)
+          echo "Setelah dapat perintah, jalankan step selanjutnya secara manual"
+          exit 1
+
+      - name: Jalankan Setup (Manual)
+        run: |
+          # GANTI BARIS INI DENGAN PERINTAH YANG DIDAPAT DARI GOOGLE
+          # Contoh:
+          # DISPLAY= /opt/google/chrome-remote-desktop/start-host \
+          #   --code="4/0AX4XfWi..." \
+          #   --redirect-url="https://remotedesktop.google.com/_/oauthredirect" \
+          #   --name=$(hostname)
+
+          echo "⚠️  Kamu harus mengedit file workflow ini!"
+          echo "   1. Dapatkan perintah dari https://remotedesktop.google.com/headless"
+          echo "   2. Kembali ke repo, edit file .github/workflows/crd.yml"
+          echo "   3. Ganti baris ini dengan perintah tersebut"
+          echo "   4. Commit ulang, lalu jalankan lagi workflow"
+          exit 1
+
+      - name: Set PIN & Jaga Hidup
+        run: |
+          # Set PIN 6 digit (ganti 123456 dengan PINmu)
+          echo "123456" | ~/start-host --pin
+          echo ""
           echo "=================================================="
-          echo "✅ AnyDesk siap!"
-          echo "🔑 ID Remote: $ID"
-          echo "🔒 Password: rahasia123"
-          echo "🌐 Download AnyDesk di Android dari Play Store"
-          echo "📱 Buka AnyDesk, masukkan ID dan password"
+          echo "✅ SEMUA SELESAI!"
+          echo "🔗 Buka: https://remotedesktop.google.com/access"
+          echo "🔑 Masuk dengan Google Account yang sama"
+          echo "🖥️  Klik komputer '$(hostname)' dan masukkan PIN 123456"
+          echo ""
+          echo "⏳ Job berjalan 6 jam. Tutup jendela untuk stop."
           echo "=================================================="
           sleep 6h &
           wait $!
