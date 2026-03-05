@@ -1,4 +1,4 @@
-name: macOS Rustdesk Remote
+name: macOS Rustdesk Remote (Android Compatible)
 
 on: workflow_dispatch
 
@@ -10,40 +10,54 @@ jobs:
         run: |
           # Unduh Rustdesk untuk macOS (ARM64)
           curl -L -o rustdesk.dmg https://github.com/rustdesk/rustdesk/releases/download/1.2.3/rustdesk-1.2.3-aarch64.dmg
-          hdiutil attach rustdesk.dmg
-          sudo cp -r /Volumes/RustDesk/RustDesk.app /Applications/
-          hdiutil detach /Volumes/RustDesk
+          hdiutil attach rustdesk.dmg -nobrowse
+          
+          # Cari folder volume yang dimount (biasanya /Volumes/rustdesk-*)
+          VOLUME_PATH=$(ls -d /Volumes/rustdesk-* | head -1)
+          echo "Volume ter-mount di: $VOLUME_PATH"
+          
+          # Salin aplikasi ke /Applications
+          sudo cp -r "$VOLUME_PATH/RustDesk.app" /Applications/
+          
+          # Unmount volume
+          hdiutil detach "$VOLUME_PATH"
 
       - name: Jalankan Rustdesk Headless
         run: |
           # Ganti password sesuai keinginan (minimal 6 karakter)
           PASSWORD="rahasia123"
-
+          
           # Jalankan service Rustdesk di background
           /Applications/RustDesk.app/Contents/MacOS/RustDesk --service --password "$PASSWORD" &
           
-          # Tunggu hingga service siap
-          sleep 10
-
-          # Baca file ID (lokasi default)
+          # Tunggu hingga service siap dan file ID tergenerate (max 30 detik)
           ID_FILE="$HOME/Library/Application Support/rustdesk/config/ID"
+          echo "Menunggu file ID muncul..."
+          for i in {1..30}; do
+            if [ -f "$ID_FILE" ]; then
+              break
+            fi
+            sleep 1
+          done
+          
+          # Baca ID
           if [ -f "$ID_FILE" ]; then
             ID=$(cat "$ID_FILE")
           else
-            ID="(ID belum tergenerate, cek log)"
+            ID="(file ID tidak ditemukan, cek manual)"
           fi
-
+          
           echo "=================================================="
           echo "✅ Rustdesk siap digunakan!"
           echo "🔑 ID Remote: $ID"
           echo "🔒 Password: $PASSWORD"
-          echo "🌐 Download client di: https://rustdesk.com/"
-          echo "📱 Konek menggunakan ID dan password di atas"
+          echo "🌐 Download client Android di: https://rustdesk.com/"
+          echo "📱 Buka RustDesk di Android, masukkan ID dan password di atas"
           echo ""
           echo "⏳ Job akan berjalan maksimal 6 jam."
           echo "   Tekan Ctrl+C di log untuk menghentikan lebih awal."
           echo "=================================================="
-
+          
           # Jaga job tetap hidup
           sleep 6h &
           wait $!
