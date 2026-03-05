@@ -1,83 +1,36 @@
-name: macOS Rustdesk Remote (Android Compatible)
+name: macOS AnyDesk Remote
 
 on: workflow_dispatch
 
 jobs:
-  rustdesk:
+  anydesk:
     runs-on: macos-latest
     steps:
-      - name: Download & Install Rustdesk
+      - name: Download & Install AnyDesk
         run: |
-          # Unduh Rustdesk untuk macOS (ARM64)
-          curl -L -o rustdesk.dmg https://github.com/rustdesk/rustdesk/releases/download/1.2.3/rustdesk-1.2.3-aarch64.dmg
-          hdiutil attach rustdesk.dmg -nobrowse
-          
-          # Cari folder volume yang dimount (biasanya /Volumes/rustdesk-*)
-          VOLUME_PATH=$(ls -d /Volumes/rustdesk-* | head -1)
-          echo "Volume ter-mount di: $VOLUME_PATH"
-          
-          # Salin aplikasi ke /Applications
-          sudo cp -r "$VOLUME_PATH/RustDesk.app" /Applications/
-          
-          # Unmount volume
-          hdiutil detach "$VOLUME_PATH"
+          curl -L -o AnyDesk.dmg https://download.anydesk.com/anydesk.dmg
+          hdiutil attach AnyDesk.dmg
+          sudo cp -r /Volumes/AnyDesk/AnyDesk.app /Applications/
+          hdiutil detach /Volumes/AnyDesk
 
-      - name: Jalankan Rustdesk Headless
+      - name: Start AnyDesk & Get ID
         run: |
-          # Ganti password sesuai keinginan (minimal 6 karakter)
-          PASSWORD="rahasia123"
+          # Jalankan AnyDesk di background
+          /Applications/AnyDesk.app/Contents/MacOS/AnyDesk --service &
+          sleep 5
           
-          # Hapus konfigurasi lama jika ada (agar fresh)
-          rm -rf "$HOME/Library/Application Support/rustdesk"
+          # Dapatkan ID
+          ID=$(/Applications/AnyDesk.app/Contents/MacOS/AnyDesk --get-id)
           
-          # Jalankan service Rustdesk di background
-          echo "Menjalankan RustDesk service..."
-          /Applications/RustDesk.app/Contents/MacOS/RustDesk --service --password "$PASSWORD" &
-          RUSTDESK_PID=$!
+          # Set password
+          /Applications/AnyDesk.app/Contents/MacOS/AnyDesk --set-password rahasia123
           
-          # Tunggu hingga proses menghasilkan file ID (maks 60 detik)
-          echo "Menunggu file ID tergenerate..."
-          ID=""
-          for i in {1..60}; do
-            # Cek di lokasi umum
-            if [ -f "$HOME/Library/Application Support/rustdesk/config/ID" ]; then
-              ID=$(cat "$HOME/Library/Application Support/rustdesk/config/ID")
-              break
-            fi
-            # Cek juga di lokasi alternatif
-            if [ -f "$HOME/.config/rustdesk/config/ID" ]; then
-              ID=$(cat "$HOME/.config/rustdesk/config/ID")
-              break
-            fi
-            sleep 1
-          done
-          
-          # Jika masih tidak ditemukan, coba dengan find
-          if [ -z "$ID" ]; then
-            echo "Mencari file ID dengan find..."
-            ID_FILE=$(find "$HOME" -name "ID" -path "*/rustdesk/config/ID" 2>/dev/null | head -1)
-            if [ -n "$ID_FILE" ]; then
-              ID=$(cat "$ID_FILE")
-            fi
-          fi
-          
-          # Tampilkan hasil
           echo "=================================================="
-          echo "✅ Rustdesk siap digunakan!"
-          if [ -n "$ID" ]; then
-            echo "🔑 ID Remote: $ID"
-          else
-            echo "🔑 ID Remote: (TIDAK DITEMUKAN - coba jalankan ulang)"
-            echo "   Proses mungkin masih memuat, cek dengan: ps aux | grep RustDesk"
-          fi
-          echo "🔒 Password: $PASSWORD"
-          echo "🌐 Download client Android di: https://rustdesk.com/"
-          echo "📱 Buka RustDesk di Android, masukkan ID dan password di atas"
-          echo ""
-          echo "⏳ Job akan berjalan maksimal 6 jam."
-          echo "   Tekan Ctrl+C di log untuk menghentikan lebih awal."
+          echo "✅ AnyDesk siap!"
+          echo "🔑 ID Remote: $ID"
+          echo "🔒 Password: rahasia123"
+          echo "🌐 Download AnyDesk di Android dari Play Store"
+          echo "📱 Buka AnyDesk, masukkan ID dan password"
           echo "=================================================="
-          
-          # Jaga job tetap hidup
           sleep 6h &
           wait $!
